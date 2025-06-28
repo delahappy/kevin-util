@@ -127,45 +127,42 @@ def big_search_csv():
                     data = list(reader)
                     root.data = data
                     logging.info(f"Loaded CSV file: {file_path}")
-                    default_headers = ['Address', 'Town', 'Location ID']
-                    header_lower = [col.strip().lower() for col in header]
-                    missing_columns = [col for col in default_headers if col.lower() not in header_lower]
-                    if missing_columns:
-                        messagebox.showerror("Error", f"The following required columns are missing in the CSV file: {', '.join(missing_columns)}")
-                        logging.error(f"Missing columns: {missing_columns}")
-                        root.file_loaded = False
-                        return False
-                    root.col_indices = {}
-                    for col in default_headers:
-                        idx = header_lower.index(col.lower())
-                        root.col_indices[col.lower()] = idx
-                    # Populate town dropdown
-                    town_index = root.col_indices.get('town')
-                    if town_index is not None:
-                        towns = sorted(set(
-                            row[town_index].strip() for row in data
-                            if len(row) > town_index and row[town_index].strip()
-                        ))
-                        town_dropdown['values'] = ['All Towns'] + towns
-                        town_dropdown.current(0)
-                        town_dropdown.config(state='readonly')
-                        town_label.config(text="Select Town:")
-                        if root.live_search_enabled:
-                            town_dropdown.bind("<<ComboboxSelected>>", trigger_search)
-                    else:
-                        town_dropdown['values'] = ['All Towns']
-                        town_dropdown.current(0)
-                        town_dropdown.config(state='disabled')
-                        town_label.config(text="Town column not found")
-                        town_dropdown.unbind("<<ComboboxSelected>>")
+                    selected_columns = show_column_selector(header)
+                    if not selected_columns:
+                        messagebox.showinfo("No Columns Selected", "No columns were selected. Displaying all columns.")
+                        selected_columns = header
+                    root.selected_columns = selected_columns
+                    root.col_indices = {col: idx for idx, col in enumerate(header)}
+                    # --- Populate the result table with all data for selected columns ---
+                    for item in result_table.get_children():
+                        result_table.delete(item)
+                    result_table["columns"] = selected_columns
+                    result_table["show"] = "headings"
+                    for idx, col_name in enumerate(selected_columns):
+                        result_table.heading(col_name, text=col_name)
+                        result_table.column(col_name, width=200, anchor='w')
+                    col_indices = [header.index(col) for col in selected_columns]
+                    # Only insert data if at least one column is selected
+                    if selected_columns:
+                        for row in data:
+                            if any(row):
+                                row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
+                                # Fix: Only insert if at least one selected column has data
+                                if any(row_values):
+                                    result_table.insert("", tk.END, values=row_values)
+                    # --- End new ---
+                    town_dropdown['values'] = ['All Towns']
+                    town_dropdown.current(0)
+                    town_dropdown.config(state='disabled')
+                    town_label.config(text="Column selection mode")
+                    town_dropdown.unbind("<<ComboboxSelected>>")
                     if not status_lock["locked"]:
                         status_label.config(text=f"Loaded file: {file_path}")
                     root.file_loaded = True
                     root.persistent_file_path = file_path
                     root.ready_for_search = True
                     save_settings()
-                    if root.live_search_enabled:
-                        perform_search()
+                    # Remove perform_search() here to avoid clearing the just-populated table
                     return True
             except Exception as e:
                 logging.error(f"Failed to open file: {e}")
@@ -174,6 +171,48 @@ def big_search_csv():
                     status_label.config(text="No file loaded.")
                 root.file_loaded = False
                 return False
+
+        def show_column_selector(header):
+            selected = set(header)
+            dialog = tk.Toplevel(root)
+            dialog.title("Select Columns to Display")
+            dialog.geometry("400x400")
+            # --- Main container ---
+            container = tk.Frame(dialog)
+            container.pack(fill="both", expand=True)
+            # --- Scrollable frame for checkboxes ---
+            canvas = tk.Canvas(container, borderwidth=0)
+            frame = tk.Frame(canvas)
+            vsb = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=vsb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+            canvas.create_window((0, 0), window=frame, anchor="nw")
+            def on_frame_configure(event):
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            frame.bind("<Configure>", on_frame_configure)
+            vars = []
+            for col in header:
+                var = tk.BooleanVar(value=False)  # Unchecked by default
+                cb = tk.Checkbutton(frame, text=col, variable=var)
+                cb.pack(anchor='w')
+                vars.append((col, var))
+            # --- Button frame at the bottom, outside the scrollable area ---
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(side='bottom', fill='x', pady=5)
+            def on_ok():
+                sel = [col for col, var in vars if var.get()]
+                dialog.selected = sel
+                dialog.destroy()
+            btn = tk.Button(btn_frame, text="OK", command=on_ok)
+            btn.pack(side='left', padx=10, pady=5)
+            close_btn = tk.Button(btn_frame, text="Cancel", command=dialog.destroy)
+            close_btn.pack(side='right', padx=10, pady=5)
+            dialog.bind('<Return>', lambda event: on_ok())
+            dialog.transient(root)
+            dialog.grab_set()
+            root.wait_window(dialog)
+            return getattr(dialog, 'selected', header)
 
         def open_file():
             file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
@@ -189,57 +228,33 @@ def big_search_csv():
             try:
                 search_address = entry_address.get().strip()
                 case_sensitive = var_case.get()
-                selected_town = town_var.get().strip()
                 matches = []
                 header = root.header
                 data = root.data
-                col_indices = root.col_indices
-                address_index = col_indices.get('address')
-                town_index = col_indices.get('town')
-                location_id_index = col_indices.get('location id')
+                selected_columns = getattr(root, 'selected_columns', header)
+                # Find indices for selected columns
+                col_indices = [header.index(col) for col in selected_columns]
                 for row in data:
-                    if len(row) <= address_index:
-                        continue
-                    # Filter by town
-                    if selected_town != 'All Towns' and town_index is not None:
-                        if len(row) > town_index:
-                            row_town = row[town_index].strip()
-                            if not case_sensitive:
-                                row_town_comp = row_town.lower()
-                                selected_town_comp = selected_town.lower()
-                            else:
-                                row_town_comp = row_town
-                                selected_town_comp = selected_town
-                            if row_town_comp != selected_town_comp:
-                                continue
+                    # Search logic: if search box is empty, show all rows
+                    if search_address:
+                        row_text = ' '.join(row[idx] for idx in col_indices if idx < len(row))
+                        if not case_sensitive:
+                            match = search_address.lower() in row_text.lower()
                         else:
+                            match = search_address in row_text
+                        if not match:
                             continue
-                    row_address = row[address_index]
-                    if not row_address:
-                        continue
-                    if not case_sensitive:
-                        search_address_lower = search_address.lower()
-                        row_address_lower = row_address.lower()
-                        match = search_address_lower in row_address_lower
-                    else:
-                        match = search_address in row_address
-                    if match:
-                        matches.append(row)
+                    matches.append(row)
                 for item in result_table.get_children():
                     result_table.delete(item)
                 if matches:
-                    column_names = ['Address', 'Town', 'Location ID']
-                    result_table["columns"] = column_names
+                    result_table["columns"] = selected_columns
                     result_table["show"] = "headings"
-                    for idx, col_name in enumerate(column_names):
+                    for idx, col_name in enumerate(selected_columns):
                         result_table.heading(col_name, text=col_name)
                         result_table.column(col_name, width=200, anchor='w')
                     for row in matches:
-                        row_values = [
-                            row[address_index] if address_index < len(row) else '',
-                            row[town_index] if town_index < len(row) else '',
-                            row[location_id_index] if location_id_index < len(row) else ''
-                        ]
+                        row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
                         result_table.insert("", tk.END, values=row_values)
                     if not status_lock["locked"]:
                         status_label.config(text=f"Found {len(matches)} matching records.")
