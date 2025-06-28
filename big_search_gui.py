@@ -541,7 +541,6 @@ def big_search_csv():
                 if text != cleaned:
                     entry_address.delete(0, tk.END)
                     entry_address.insert(0, cleaned)
-                    messagebox.showinfo("Clipboard Cleaned", cleaned)
                 def delayed_trigger():
                     if getattr(root, 'file_loaded', False) and getattr(root, 'ready_for_search', False):
                         trigger_search()
