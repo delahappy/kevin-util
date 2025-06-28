@@ -9,6 +9,7 @@ from tkinter import ttk, filedialog, messagebox, colorchooser
 from PIL import Image, ImageTk  # For handling images
 import json
 import threading
+import re
 
 APP_VERSION = "1.5.1.c"
 
@@ -147,22 +148,34 @@ def big_search_csv():
                         for row in data:
                             if any(row):
                                 row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
-                                # Fix: Only insert if at least one selected column has data
                                 if any(row_values):
                                     result_table.insert("", tk.END, values=row_values)
-                    # --- End new ---
-                    town_dropdown['values'] = ['All Towns']
-                    town_dropdown.current(0)
-                    town_dropdown.config(state='disabled')
-                    town_label.config(text="Column selection mode")
-                    town_dropdown.unbind("<<ComboboxSelected>>")
+                    # --- Populate the town/city dropdown if present in selected columns ---
+                    town_city_col = None
+                    for col in selected_columns:
+                        if col.lower() in ("town", "city"):
+                            town_city_col = col
+                            break
+                    if town_city_col:
+                        idx = header.index(town_city_col)
+                        unique_vals = sorted(set(row[idx] for row in data if len(row) > idx and row[idx].strip()))
+                        town_dropdown['values'] = ['All Towns'] + unique_vals
+                        town_dropdown.current(0)
+                        town_dropdown.config(state='readonly')
+                        town_label.config(text=f"Select {town_city_col}:")
+                        town_dropdown.bind("<<ComboboxSelected>>", lambda e: filter_by_town_city())
+                    else:
+                        town_dropdown['values'] = ['All Towns']
+                        town_dropdown.current(0)
+                        town_dropdown.config(state='disabled')
+                        town_label.config(text="Column selection mode")
+                        town_dropdown.unbind("<<ComboboxSelected>>")
                     if not status_lock["locked"]:
                         status_label.config(text=f"Loaded file: {file_path}")
                     root.file_loaded = True
                     root.persistent_file_path = file_path
                     root.ready_for_search = True
                     save_settings()
-                    # Remove perform_search() here to avoid clearing the just-populated table
                     return True
             except Exception as e:
                 logging.error(f"Failed to open file: {e}")
@@ -171,6 +184,36 @@ def big_search_csv():
                     status_label.config(text="No file loaded.")
                 root.file_loaded = False
                 return False
+
+        def filter_by_town_city():
+            selected = town_dropdown.get()
+            selected_columns = getattr(root, 'selected_columns', root.header)
+            header = root.header
+            data = root.data
+            # Find the first selected column that is 'town' or 'city'
+            town_city_col = None
+            for col in selected_columns:
+                if col.lower() in ("town", "city"):
+                    town_city_col = col
+                    break
+            if not town_city_col or selected == 'All Towns':
+                # Show all data
+                col_indices = [header.index(col) for col in selected_columns]
+                result_table.delete(*result_table.get_children())
+                for row in data:
+                    if any(row):
+                        row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
+                        if any(row_values):
+                            result_table.insert("", tk.END, values=row_values)
+                return
+            idx = header.index(town_city_col)
+            col_indices = [header.index(col) for col in selected_columns]
+            result_table.delete(*result_table.get_children())
+            for row in data:
+                if len(row) > idx and row[idx] == selected:
+                    row_values = [row[i] if i < len(row) else '' for i in col_indices]
+                    if any(row_values):
+                        result_table.insert("", tk.END, values=row_values)
 
         def show_column_selector(header):
             selected = set(header)
@@ -192,8 +235,9 @@ def big_search_csv():
                 canvas.configure(scrollregion=canvas.bbox("all"))
             frame.bind("<Configure>", on_frame_configure)
             vars = []
-            for col in header:
-                var = tk.BooleanVar(value=False)  # Unchecked by default
+            for i, col in enumerate(header):
+                # First 5 columns checked by default, rest unchecked
+                var = tk.BooleanVar(value=(i < 5))
                 cb = tk.Checkbutton(frame, text=col, variable=var)
                 cb.pack(anchor='w')
                 vars.append((col, var))
@@ -485,6 +529,31 @@ def big_search_csv():
         entry_address = ttk.Entry(root, width=50)
         entry_address.grid(row=1, column=1, padx=5, pady=5, sticky='we')
 
+        def clean_text(text):
+            """Replace all tabs, newlines, and multiple spaces in text with a single space."""
+            # Replace tabs/newlines with a space, then collapse ALL runs of whitespace to a single space
+            return re.sub(r'\s+', ' ', text).strip()
+
+        def clean_entry_after_paste(event=None):
+            try:
+                text = entry_address.get()
+                cleaned = clean_text(text)
+                if text != cleaned:
+                    entry_address.delete(0, tk.END)
+                    entry_address.insert(0, cleaned)
+                    messagebox.showinfo("Clipboard Cleaned", cleaned)
+                def delayed_trigger():
+                    if getattr(root, 'file_loaded', False) and getattr(root, 'ready_for_search', False):
+                        trigger_search()
+                root.after(300, delayed_trigger)
+            except Exception as e:
+                logging.warning(f"clean_entry_after_paste error: {e}")
+
+        # Bind all paste events to clean after paste
+        entry_address.bind("<<Paste>>", lambda e: entry_address.after_idle(clean_entry_after_paste))
+        entry_address.bind("<Command-v>", lambda e: entry_address.after_idle(clean_entry_after_paste))  # macOS
+        entry_address.bind("<Control-v>", lambda e: entry_address.after_idle(clean_entry_after_paste))  # Windows/Linux
+
         def on_focus(event):
             try:
                 if root.auto_paste_enabled.get():
@@ -494,7 +563,7 @@ def big_search_csv():
                         if len(clipboard_history) > 10:
                             clipboard_history.pop(0)
                     entry_address.delete(0, tk.END)
-                    entry_address.insert(0, text)
+                    entry_address.insert(0, clean_text(text))
                     def delayed_trigger():
                         if getattr(root, 'file_loaded', False) and getattr(root, 'ready_for_search', False):
                             trigger_search()
