@@ -1,0 +1,6 @@
+2025-06-28 12:18:51 INFO: Application started.
+2025-06-28 12:18:51 WARNING: Icon file 'icon.png' not found.
+2025-06-28 12:20:01 INFO: Application started.
+2025-06-28 12:20:01 WARNING: Icon file 'icon.png' not found.
+2025-06-28 12:21:16 INFO: Loaded CSV file: /Users/tjbryant/PycharmProjects/kevin-csv-util/FCC_Active_BSL_12312024_rel_6.csv
+2025-06-28 12:21:19 ERROR: Missing columns: ['Address', 'Town', 'Location ID']
