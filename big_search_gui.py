@@ -78,8 +78,6 @@ def big_search_csv():
                     if root.persistent_file_enabled.get():
                         root.persistent_file_path = settings.get("file_path", None)
                     root.auto_paste_enabled.set(settings.get("auto_paste", True))
-                    # Load last selected columns if present
-                    root.last_selected_columns = settings.get("last_selected_columns", None)
             except Exception as e:
                 logging.warning(f"Failed to load settings: {e}")
 
@@ -89,8 +87,7 @@ def big_search_csv():
                 json.dump({
                     "persistent": root.persistent_file_enabled.get(),
                     "file_path": root.persistent_file_path,
-                    "auto_paste": root.auto_paste_enabled.get(),
-                    "last_selected_columns": getattr(root, 'selected_columns', None)
+                    "auto_paste": root.auto_paste_enabled.get()
                 }, f)
         except Exception as e:
             logging.warning(f"Failed to save settings: {e}")
@@ -199,6 +196,11 @@ def big_search_csv():
                 if col.lower() in ("town", "city"):
                     town_city_col = col
                     break
+            # --- Red box feedback ---
+            if not town_city_col or selected == 'All Towns':
+                town_filter_box.grid_remove()
+            else:
+                town_filter_box.grid()
             if not town_city_col or selected == 'All Towns':
                 # Show all data
                 col_indices = [header.index(col) for col in selected_columns]
@@ -238,13 +240,9 @@ def big_search_csv():
                 canvas.configure(scrollregion=canvas.bbox("all"))
             frame.bind("<Configure>", on_frame_configure)
             vars = []
-            # Use last selected columns if available and valid
-            last_selected = getattr(root, 'last_selected_columns', None)
             for i, col in enumerate(header):
-                if last_selected and col in last_selected:
-                    var = tk.BooleanVar(value=True)
-                else:
-                    var = tk.BooleanVar(value=(i < 5) if not last_selected else False)
+                # First 5 columns checked by default, rest unchecked
+                var = tk.BooleanVar(value=(i < 5))
                 cb = tk.Checkbutton(frame, text=col, variable=var)
                 cb.pack(anchor='w')
                 vars.append((col, var))
@@ -532,15 +530,19 @@ def big_search_csv():
         town_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky='we')
         town_dropdown['values'] = ['All Towns']
         town_dropdown.current(0)
+        # --- Red box for active town filter ---
+        town_filter_box = tk.Label(root, text="TOWN FILTER ACTIVE", bg="red", fg="black", font=("Arial", 10, "bold"), padx=8, pady=2)
+        town_filter_box.grid(row=0, column=2, padx=5, pady=5, sticky='w')
+        town_filter_box.grid_remove()  # Hide by default
         ttk.Label(root, text="Enter Address:").grid(row=1, column=0, padx=5, pady=5, sticky='e')
         entry_address = ttk.Entry(root, width=50)
         entry_address.grid(row=1, column=1, padx=5, pady=5, sticky='we')
 
         def clean_text(text):
-            """Replace all tabs, newlines, and multiple spaces in text with a single space, and remove road type designations if they are the last word."""
+            """Replace all tabs, newlines, and multiple spaces in text with a single space, and remove road type designations."""
             # Replace all whitespace with a single space
             text = re.sub(r'\s+', ' ', text).strip()
-            # Remove common road type designations (case-insensitive, only if last word)
+            # Remove common road type designations (case-insensitive, word boundary)
             road_types = [
                 r'rd', r'st', r'street', r'ave', r'avenue', r'blvd', r'boulevard', r'dr', r'drive', r'ln', r'lane',
                 r'ct', r'court', r'pkwy', r'parkway', r'ter', r'terrace', r'pl', r'place', r'hwy', r'highway',
@@ -550,10 +552,11 @@ def big_search_csv():
                 r'falls', r'fork', r'harbor', r'hollow', r'isle', r'knoll', r'ledge', r'meadow', r'passage', r'plain',
                 r'prairie', r'rapids', r'ridge', r'shores', r'summit', r'valley', r'vista', r'wood', r'zone'
             ]
-            # Remove if the last word matches a road type
-            pattern = r'\b(?:' + '|'.join(road_types) + r')\b\s*$'
+            # Remove each road type if it appears as a whole word at the end or in the middle
+            pattern = r'\\b(?:' + '|'.join(road_types) + r')\\b'
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
-            return text.strip()
+            # Remove extra spaces again after removal
+            return re.sub(r'\s+', ' ', text).strip()
 
         def clean_entry_after_paste(event=None):
             try:
