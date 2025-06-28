@@ -78,6 +78,7 @@ def big_search_csv():
                     if root.persistent_file_enabled.get():
                         root.persistent_file_path = settings.get("file_path", None)
                     root.auto_paste_enabled.set(settings.get("auto_paste", True))
+                    root.last_selected_columns = settings.get("last_selected_columns", None)
             except Exception as e:
                 logging.warning(f"Failed to load settings: {e}")
 
@@ -87,7 +88,8 @@ def big_search_csv():
                 json.dump({
                     "persistent": root.persistent_file_enabled.get(),
                     "file_path": root.persistent_file_path,
-                    "auto_paste": root.auto_paste_enabled.get()
+                    "auto_paste": root.auto_paste_enabled.get(),
+                    "last_selected_columns": getattr(root, 'selected_columns', None)
                 }, f)
         except Exception as e:
             logging.warning(f"Failed to save settings: {e}")
@@ -137,13 +139,13 @@ def big_search_csv():
                     # --- Populate the result table with all data for selected columns ---
                     for item in result_table.get_children():
                         result_table.delete(item)
+                    # Set only the selected columns for the table
                     result_table["columns"] = selected_columns
                     result_table["show"] = "headings"
-                    for idx, col_name in enumerate(selected_columns):
-                        result_table.heading(col_name, text=col_name)
-                        result_table.column(col_name, width=200, anchor='w')
+                    for col in result_table['columns']:
+                        result_table.heading(col, text=col)
+                        result_table.column(col, width=200, anchor='w')
                     col_indices = [header.index(col) for col in selected_columns]
-                    # Only insert data if at least one column is selected
                     if selected_columns:
                         for row in data:
                             if any(row):
@@ -221,7 +223,8 @@ def big_search_csv():
                         result_table.insert("", tk.END, values=row_values)
 
         def show_column_selector(header):
-            selected = set(header)
+            # Use last selected columns if available and valid
+            last_selected = getattr(root, 'last_selected_columns', None)
             dialog = tk.Toplevel(root)
             dialog.title("Select Columns to Display")
             dialog.geometry("400x400")
@@ -241,8 +244,13 @@ def big_search_csv():
             frame.bind("<Configure>", on_frame_configure)
             vars = []
             for i, col in enumerate(header):
-                # First 5 columns checked by default, rest unchecked
-                var = tk.BooleanVar(value=(i < 5))
+                if last_selected and col in last_selected:
+                    checked = True
+                elif not last_selected and i < 5:
+                    checked = True
+                else:
+                    checked = False
+                var = tk.BooleanVar(value=checked)
                 cb = tk.Checkbutton(frame, text=col, variable=var)
                 cb.pack(anchor='w')
                 vars.append((col, var))
