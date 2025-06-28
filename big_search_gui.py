@@ -78,6 +78,8 @@ def big_search_csv():
                     if root.persistent_file_enabled.get():
                         root.persistent_file_path = settings.get("file_path", None)
                     root.auto_paste_enabled.set(settings.get("auto_paste", True))
+                    # Load last selected columns if present
+                    root.last_selected_columns = settings.get("last_selected_columns", None)
             except Exception as e:
                 logging.warning(f"Failed to load settings: {e}")
 
@@ -87,7 +89,8 @@ def big_search_csv():
                 json.dump({
                     "persistent": root.persistent_file_enabled.get(),
                     "file_path": root.persistent_file_path,
-                    "auto_paste": root.auto_paste_enabled.get()
+                    "auto_paste": root.auto_paste_enabled.get(),
+                    "last_selected_columns": getattr(root, 'selected_columns', None)
                 }, f)
         except Exception as e:
             logging.warning(f"Failed to save settings: {e}")
@@ -235,9 +238,13 @@ def big_search_csv():
                 canvas.configure(scrollregion=canvas.bbox("all"))
             frame.bind("<Configure>", on_frame_configure)
             vars = []
+            # Use last selected columns if available and valid
+            last_selected = getattr(root, 'last_selected_columns', None)
             for i, col in enumerate(header):
-                # First 5 columns checked by default, rest unchecked
-                var = tk.BooleanVar(value=(i < 5))
+                if last_selected and col in last_selected:
+                    var = tk.BooleanVar(value=True)
+                else:
+                    var = tk.BooleanVar(value=(i < 5) if not last_selected else False)
                 cb = tk.Checkbutton(frame, text=col, variable=var)
                 cb.pack(anchor='w')
                 vars.append((col, var))
@@ -530,9 +537,23 @@ def big_search_csv():
         entry_address.grid(row=1, column=1, padx=5, pady=5, sticky='we')
 
         def clean_text(text):
-            """Replace all tabs, newlines, and multiple spaces in text with a single space."""
-            # Replace tabs/newlines with a space, then collapse ALL runs of whitespace to a single space
-            return re.sub(r'\s+', ' ', text).strip()
+            """Replace all tabs, newlines, and multiple spaces in text with a single space, and remove road type designations if they are the last word."""
+            # Replace all whitespace with a single space
+            text = re.sub(r'\s+', ' ', text).strip()
+            # Remove common road type designations (case-insensitive, only if last word)
+            road_types = [
+                r'rd', r'st', r'street', r'ave', r'avenue', r'blvd', r'boulevard', r'dr', r'drive', r'ln', r'lane',
+                r'ct', r'court', r'pkwy', r'parkway', r'ter', r'terrace', r'pl', r'place', r'hwy', r'highway',
+                r'cir', r'circle', r'way', r'trl', r'trail', r'loop', r'sq', r'square', r'row', r'alley', r'walk',
+                r'cres', r'crescent', r'pass', r'path', r'run', r'crossing', r'cross', r'park', r'commons', r'view',
+                r'vista', r'point', r'grove', r'heights', r'landing', r'woods', r'glenn', r'brook', r'cove', r'cliff',
+                r'falls', r'fork', r'harbor', r'hollow', r'isle', r'knoll', r'ledge', r'meadow', r'passage', r'plain',
+                r'prairie', r'rapids', r'ridge', r'shores', r'summit', r'valley', r'vista', r'wood', r'zone'
+            ]
+            # Remove if the last word matches a road type
+            pattern = r'\b(?:' + '|'.join(road_types) + r')\b\s*$'
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            return text.strip()
 
         def clean_entry_after_paste(event=None):
             try:
