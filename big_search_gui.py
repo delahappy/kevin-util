@@ -9,6 +9,7 @@ from tkinter import ttk, filedialog, messagebox, colorchooser
 from PIL import Image, ImageTk  # For handling images
 import json
 import threading
+import re
 
 APP_VERSION = "1.5.1.c"
 
@@ -77,6 +78,7 @@ def big_search_csv():
                     if root.persistent_file_enabled.get():
                         root.persistent_file_path = settings.get("file_path", None)
                     root.auto_paste_enabled.set(settings.get("auto_paste", True))
+                    root.last_selected_columns = settings.get("last_selected_columns", None)
             except Exception as e:
                 logging.warning(f"Failed to load settings: {e}")
 
@@ -86,7 +88,8 @@ def big_search_csv():
                 json.dump({
                     "persistent": root.persistent_file_enabled.get(),
                     "file_path": root.persistent_file_path,
-                    "auto_paste": root.auto_paste_enabled.get()
+                    "auto_paste": root.auto_paste_enabled.get(),
+                    "last_selected_columns": getattr(root, 'selected_columns', None)
                 }, f)
         except Exception as e:
             logging.warning(f"Failed to save settings: {e}")
@@ -127,36 +130,47 @@ def big_search_csv():
                     data = list(reader)
                     root.data = data
                     logging.info(f"Loaded CSV file: {file_path}")
-                    default_headers = ['Address', 'Town', 'Location ID']
-                    header_lower = [col.strip().lower() for col in header]
-                    missing_columns = [col for col in default_headers if col.lower() not in header_lower]
-                    if missing_columns:
-                        messagebox.showerror("Error", f"The following required columns are missing in the CSV file: {', '.join(missing_columns)}")
-                        logging.error(f"Missing columns: {missing_columns}")
-                        root.file_loaded = False
-                        return False
-                    root.col_indices = {}
-                    for col in default_headers:
-                        idx = header_lower.index(col.lower())
-                        root.col_indices[col.lower()] = idx
-                    # Populate town dropdown
-                    town_index = root.col_indices.get('town')
-                    if town_index is not None:
-                        towns = sorted(set(
-                            row[town_index].strip() for row in data
-                            if len(row) > town_index and row[town_index].strip()
-                        ))
-                        town_dropdown['values'] = ['All Towns'] + towns
+                    selected_columns = show_column_selector(header)
+                    if not selected_columns:
+                        messagebox.showinfo("No Columns Selected", "No columns were selected. Displaying all columns.")
+                        selected_columns = header
+                    root.selected_columns = selected_columns
+                    root.col_indices = {col: idx for idx, col in enumerate(header)}
+                    # --- Populate the result table with all data for selected columns ---
+                    for item in result_table.get_children():
+                        result_table.delete(item)
+                    # Set only the selected columns for the table
+                    result_table["columns"] = selected_columns
+                    result_table["show"] = "headings"
+                    for col in result_table['columns']:
+                        result_table.heading(col, text=col)
+                        result_table.column(col, width=200, anchor='w')
+                    col_indices = [header.index(col) for col in selected_columns]
+                    if selected_columns:
+                        for row in data:
+                            if any(row):
+                                row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
+                                if any(row_values):
+                                    result_table.insert("", tk.END, values=row_values)
+                    # --- Populate the town/city dropdown if present in selected columns ---
+                    town_city_col = None
+                    for col in selected_columns:
+                        if col.lower() in ("town", "city"):
+                            town_city_col = col
+                            break
+                    if town_city_col:
+                        idx = header.index(town_city_col)
+                        unique_vals = sorted(set(row[idx] for row in data if len(row) > idx and row[idx].strip()))
+                        town_dropdown['values'] = ['All Towns'] + unique_vals
                         town_dropdown.current(0)
                         town_dropdown.config(state='readonly')
-                        town_label.config(text="Select Town:")
-                        if root.live_search_enabled:
-                            town_dropdown.bind("<<ComboboxSelected>>", trigger_search)
+                        town_label.config(text=f"Select {town_city_col}:")
+                        town_dropdown.bind("<<ComboboxSelected>>", lambda e: filter_by_town_city())
                     else:
                         town_dropdown['values'] = ['All Towns']
                         town_dropdown.current(0)
                         town_dropdown.config(state='disabled')
-                        town_label.config(text="Town column not found")
+                        town_label.config(text="Column selection mode")
                         town_dropdown.unbind("<<ComboboxSelected>>")
                     if not status_lock["locked"]:
                         status_label.config(text=f"Loaded file: {file_path}")
@@ -164,8 +178,6 @@ def big_search_csv():
                     root.persistent_file_path = file_path
                     root.ready_for_search = True
                     save_settings()
-                    if root.live_search_enabled:
-                        perform_search()
                     return True
             except Exception as e:
                 logging.error(f"Failed to open file: {e}")
@@ -174,6 +186,90 @@ def big_search_csv():
                     status_label.config(text="No file loaded.")
                 root.file_loaded = False
                 return False
+
+        def filter_by_town_city():
+            selected = town_dropdown.get()
+            selected_columns = getattr(root, 'selected_columns', root.header)
+            header = root.header
+            data = root.data
+            # Find the first selected column that is 'town' or 'city'
+            town_city_col = None
+            for col in selected_columns:
+                if col.lower() in ("town", "city"):
+                    town_city_col = col
+                    break
+            # --- Red box feedback ---
+            if not town_city_col or selected == 'All Towns':
+                town_filter_box.grid_remove()
+            else:
+                town_filter_box.grid()
+            if not town_city_col or selected == 'All Towns':
+                # Show all data
+                col_indices = [header.index(col) for col in selected_columns]
+                result_table.delete(*result_table.get_children())
+                for row in data:
+                    if any(row):
+                        row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
+                        if any(row_values):
+                            result_table.insert("", tk.END, values=row_values)
+                return
+            idx = header.index(town_city_col)
+            col_indices = [header.index(col) for col in selected_columns]
+            result_table.delete(*result_table.get_children())
+            for row in data:
+                if len(row) > idx and row[idx] == selected:
+                    row_values = [row[i] if i < len(row) else '' for i in col_indices]
+                    if any(row_values):
+                        result_table.insert("", tk.END, values=row_values)
+
+        def show_column_selector(header):
+            # Use last selected columns if available and valid
+            last_selected = getattr(root, 'last_selected_columns', None)
+            dialog = tk.Toplevel(root)
+            dialog.title("Select Columns to Display")
+            dialog.geometry("400x400")
+            # --- Main container ---
+            container = tk.Frame(dialog)
+            container.pack(fill="both", expand=True)
+            # --- Scrollable frame for checkboxes ---
+            canvas = tk.Canvas(container, borderwidth=0)
+            frame = tk.Frame(canvas)
+            vsb = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=vsb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+            canvas.create_window((0, 0), window=frame, anchor="nw")
+            def on_frame_configure(event):
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            frame.bind("<Configure>", on_frame_configure)
+            vars = []
+            for i, col in enumerate(header):
+                if last_selected and col in last_selected:
+                    checked = True
+                elif not last_selected and i < 5:
+                    checked = True
+                else:
+                    checked = False
+                var = tk.BooleanVar(value=checked)
+                cb = tk.Checkbutton(frame, text=col, variable=var)
+                cb.pack(anchor='w')
+                vars.append((col, var))
+            # --- Button frame at the bottom, outside the scrollable area ---
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(side='bottom', fill='x', pady=5)
+            def on_ok():
+                sel = [col for col, var in vars if var.get()]
+                dialog.selected = sel
+                dialog.destroy()
+            btn = tk.Button(btn_frame, text="OK", command=on_ok)
+            btn.pack(side='left', padx=10, pady=5)
+            close_btn = tk.Button(btn_frame, text="Cancel", command=dialog.destroy)
+            close_btn.pack(side='right', padx=10, pady=5)
+            dialog.bind('<Return>', lambda event: on_ok())
+            dialog.transient(root)
+            dialog.grab_set()
+            root.wait_window(dialog)
+            return getattr(dialog, 'selected', header)
 
         def open_file():
             file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
@@ -189,57 +285,33 @@ def big_search_csv():
             try:
                 search_address = entry_address.get().strip()
                 case_sensitive = var_case.get()
-                selected_town = town_var.get().strip()
                 matches = []
                 header = root.header
                 data = root.data
-                col_indices = root.col_indices
-                address_index = col_indices.get('address')
-                town_index = col_indices.get('town')
-                location_id_index = col_indices.get('location id')
+                selected_columns = getattr(root, 'selected_columns', header)
+                # Find indices for selected columns
+                col_indices = [header.index(col) for col in selected_columns]
                 for row in data:
-                    if len(row) <= address_index:
-                        continue
-                    # Filter by town
-                    if selected_town != 'All Towns' and town_index is not None:
-                        if len(row) > town_index:
-                            row_town = row[town_index].strip()
-                            if not case_sensitive:
-                                row_town_comp = row_town.lower()
-                                selected_town_comp = selected_town.lower()
-                            else:
-                                row_town_comp = row_town
-                                selected_town_comp = selected_town
-                            if row_town_comp != selected_town_comp:
-                                continue
+                    # Search logic: if search box is empty, show all rows
+                    if search_address:
+                        row_text = ' '.join(row[idx] for idx in col_indices if idx < len(row))
+                        if not case_sensitive:
+                            match = search_address.lower() in row_text.lower()
                         else:
+                            match = search_address in row_text
+                        if not match:
                             continue
-                    row_address = row[address_index]
-                    if not row_address:
-                        continue
-                    if not case_sensitive:
-                        search_address_lower = search_address.lower()
-                        row_address_lower = row_address.lower()
-                        match = search_address_lower in row_address_lower
-                    else:
-                        match = search_address in row_address
-                    if match:
-                        matches.append(row)
+                    matches.append(row)
                 for item in result_table.get_children():
                     result_table.delete(item)
                 if matches:
-                    column_names = ['Address', 'Town', 'Location ID']
-                    result_table["columns"] = column_names
+                    result_table["columns"] = selected_columns
                     result_table["show"] = "headings"
-                    for idx, col_name in enumerate(column_names):
+                    for idx, col_name in enumerate(selected_columns):
                         result_table.heading(col_name, text=col_name)
                         result_table.column(col_name, width=200, anchor='w')
                     for row in matches:
-                        row_values = [
-                            row[address_index] if address_index < len(row) else '',
-                            row[town_index] if town_index < len(row) else '',
-                            row[location_id_index] if location_id_index < len(row) else ''
-                        ]
+                        row_values = [row[idx] if idx < len(row) else '' for idx in col_indices]
                         result_table.insert("", tk.END, values=row_values)
                     if not status_lock["locked"]:
                         status_label.config(text=f"Found {len(matches)} matching records.")
@@ -466,9 +538,52 @@ def big_search_csv():
         town_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky='we')
         town_dropdown['values'] = ['All Towns']
         town_dropdown.current(0)
+        # --- Red box for active town filter ---
+        town_filter_box = tk.Label(root, text="TOWN FILTER ACTIVE", bg="red", fg="black", font=("Arial", 10, "bold"), padx=8, pady=2)
+        town_filter_box.grid(row=0, column=2, padx=5, pady=5, sticky='w')
+        town_filter_box.grid_remove()  # Hide by default
         ttk.Label(root, text="Enter Address:").grid(row=1, column=0, padx=5, pady=5, sticky='e')
         entry_address = ttk.Entry(root, width=50)
         entry_address.grid(row=1, column=1, padx=5, pady=5, sticky='we')
+
+        def clean_text(text):
+            """Replace all tabs, newlines, and multiple spaces in text with a single space, and remove road type designations."""
+            # Replace all whitespace with a single space
+            text = re.sub(r'\s+', ' ', text).strip()
+            # Remove common road type designations (case-insensitive, word boundary)
+            road_types = [
+                r'rd', r'st', r'street', r'ave', r'avenue', r'blvd', r'boulevard', r'dr', r'drive', r'ln', r'lane',
+                r'ct', r'court', r'pkwy', r'parkway', r'ter', r'terrace', r'pl', r'place', r'hwy', r'highway',
+                r'cir', r'circle', r'way', r'trl', r'trail', r'loop', r'sq', r'square', r'row', r'alley', r'walk',
+                r'cres', r'crescent', r'pass', r'path', r'run', r'crossing', r'cross', r'park', r'commons', r'view',
+                r'vista', r'point', r'grove', r'heights', r'landing', r'woods', r'glenn', r'brook', r'cove', r'cliff',
+                r'falls', r'fork', r'harbor', r'hollow', r'isle', r'knoll', r'ledge', r'meadow', r'passage', r'plain',
+                r'prairie', r'rapids', r'ridge', r'shores', r'summit', r'valley', r'vista', r'wood', r'zone'
+            ]
+            # Remove each road type if it appears as a whole word at the end or in the middle
+            pattern = r'\\b(?:' + '|'.join(road_types) + r')\\b'
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            # Remove extra spaces again after removal
+            return re.sub(r'\s+', ' ', text).strip()
+
+        def clean_entry_after_paste(event=None):
+            try:
+                text = entry_address.get()
+                cleaned = clean_text(text)
+                if text != cleaned:
+                    entry_address.delete(0, tk.END)
+                    entry_address.insert(0, cleaned)
+                def delayed_trigger():
+                    if getattr(root, 'file_loaded', False) and getattr(root, 'ready_for_search', False):
+                        trigger_search()
+                root.after(300, delayed_trigger)
+            except Exception as e:
+                logging.warning(f"clean_entry_after_paste error: {e}")
+
+        # Bind all paste events to clean after paste
+        entry_address.bind("<<Paste>>", lambda e: entry_address.after_idle(clean_entry_after_paste))
+        entry_address.bind("<Command-v>", lambda e: entry_address.after_idle(clean_entry_after_paste))  # macOS
+        entry_address.bind("<Control-v>", lambda e: entry_address.after_idle(clean_entry_after_paste))  # Windows/Linux
 
         def on_focus(event):
             try:
@@ -479,7 +594,7 @@ def big_search_csv():
                         if len(clipboard_history) > 10:
                             clipboard_history.pop(0)
                     entry_address.delete(0, tk.END)
-                    entry_address.insert(0, text)
+                    entry_address.insert(0, clean_text(text))
                     def delayed_trigger():
                         if getattr(root, 'file_loaded', False) and getattr(root, 'ready_for_search', False):
                             trigger_search()
